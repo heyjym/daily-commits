@@ -1,0 +1,103 @@
+# Daily green-dot run (morning window, ET 8:00-11:59).
+# Picks one random time point (hour + minute) in the window from the date,
+# so exactly one scheduled run per day proceeds; workflow_dispatch always
+# proceeds (manual test). Runs a trending project on the ephemeral runner
+# and commits runs/<date>.md.
+name: Daily run (morning)
+
+on:
+  schedule:
+    # 12:00-16:00 UTC covers ET 08:00-11:59 in both EST (UTC-5) and EDT (UTC-4).
+    - cron: '0 12,13,14,15,16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-commits-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Pick today's random time (ET)
+        id: pick
+        run: |
+          TODAY=$(TZ=America/New_York date +%F)
+          HOUR_NOW=$(TZ=America/New_York date +%H)
+          MIN_NOW=$(TZ=America/New_York date +%M)
+          echo "today=$TODAY" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          SEED_H=$(echo -n "${TODAY}-morning" | md5sum | cut -c1-8)
+          PICK_H=$(( (16#$SEED_H % 4) + 8 ))
+          if [ "$((10#$HOUR_NOW))" -ne "$PICK_H" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          SEED_M=$(echo -n "${TODAY}-morning-minute" | md5sum | cut -c1-8)
+          PICK_M=$(( 16#$SEED_M % 60 ))
+          SLEEP_MIN=$(( PICK_M - 10#$MIN_NOW ))
+          if [ "$SLEEP_MIN" -gt 0 ]; then
+            echo "picked time ${PICK_H}:$(printf %02d "$PICK_M") ET, sleeping ${SLEEP_MIN}m"
+            sleep "${SLEEP_MIN}m"
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.pick.outputs.proceed == 'true'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Skip if today's log already exists
+        id: check
+        if: steps.pick.outputs.proceed == 'true'
+        run: |
+          if [ -f "runs/${{ steps.pick.outputs.today }}.md" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select project
+        if: steps.pick.outputs.proceed == 'true' && steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TODAY: ${{ steps.pick.outputs.today }}
+          SLOT: morning
+        run: python3 .github/scripts/select-project.py
+
+      - name: Run project and write log
+        if: steps.pick.outputs.proceed == 'true' && steps.check.outputs.skip == 'false'
+        env:
+          TODAY: ${{ steps.pick.outputs.today }}
+        run: python3 .github/scripts/run-project.py
+
+      - name: Commit and push log
+        if: steps.pick.outputs.proceed == 'true' && steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TODAY: ${{ steps.pick.outputs.today }}
+        run: |
+          set -euo pipefail
+          FULL_NAME=$(python3 -c "import json; print(json.load(open('run-meta.json'))['full_name'])")
+          TYPE=$(python3 -c "import json; print(json.load(open('run-meta.json'))['type'])")
+          git config user.name "heyjym"
+          git config user.email "354487208+heyjym@users.noreply.github.com"
+          git add "runs/$TODAY.md"
+          git commit -m "Add run log for $TODAY: $FULL_NAME ($TYPE)"
+          git -c http.extraheader="AUTHORIZATION: basic $(echo -n "x-access-token:${GH_TOKEN}" | base64 -w0)" push origin HEAD:main
+          sleep 3
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/heyjym/daily-commits/contents/runs/$TODAY.md")
+          if [ "$CODE" != "200" ]; then
+            echo "verification failed: API returned HTTP $CODE" >&2
+            exit 1
+          fi
+          echo "verified runs/$TODAY.md on main (HTTP 200)"
