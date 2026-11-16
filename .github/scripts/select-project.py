@@ -7,9 +7,9 @@ well-maintained repos in that type's language, and writes selection.json.
 
 Env:
   TODAY     date YYYY-MM-DD (required)
-  SLOT      morning | afternoon | evening (default: morning). The type and
+  SLOT      two-digit slot number 01..10 (default: 01). The type and
             candidate hashes are seeded with "<TODAY>-<SLOT>-type" and
-            "<TODAY>-<SLOT>-pick" so the three daily slots pick different
+            "<TODAY>-<SLOT>-pick" so the ten daily slots pick different
             types and projects.
   GH_TOKEN  GitHub token for the Search API (optional; works unauthenticated
             for a single test, but rate limits are much lower)
@@ -44,7 +44,7 @@ def read_yesterday_type() -> str | None:
     runs_dir = "runs"
     if not os.path.isdir(runs_dir):
         return None
-    logs = sorted(f for f in os.listdir(runs_dir) if re.match(r"^\d{4}-\d{2}-\d{2}\.md$", f))
+    logs = sorted(f for f in os.listdir(runs_dir) if re.match(r"^\d{4}-\d{2}-\d{2}(-\d{2})?\.md$", f))
     if not logs:
         return None
     with open(os.path.join(runs_dir, logs[-1]), encoding="utf-8") as fh:
@@ -102,9 +102,9 @@ def main() -> None:
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", today):
         print("TODAY env var must be set to YYYY-MM-DD", file=sys.stderr)
         sys.exit(1)
-    slot = os.environ.get("SLOT", "morning").strip() or "morning"
-    if slot not in ("morning", "afternoon", "evening"):
-        print(f"SLOT must be morning, afternoon or evening (got {slot!r})", file=sys.stderr)
+    slot = os.environ.get("SLOT", "01").strip() or "01"
+    if not re.match(r"^(0[1-9]|10)$", slot):
+        print(f"SLOT must be a two-digit slot 01..10 (got {slot!r})", file=sys.stderr)
         sys.exit(1)
     token = os.environ.get("GH_TOKEN") or None
 
