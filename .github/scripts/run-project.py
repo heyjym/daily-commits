@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Clone each candidate from selection.json, install it, smoke-test it, and
-write runs/<TODAY>.md for the first one that works.
+write runs/<TODAY>-<SLOT>.md for the first one that works.
 
 Reads selection.json (written by select-project.py). Tries up to 3 candidates
 in order. Success = install OK and at least one smoke probe exit 0.
 
 Env:
   TODAY  date YYYY-MM-DD (required)
+  SLOT is read from selection.json (two-digit slot 01..10).
 No tokens are used here on purpose: the runner checks out without persisted
 credentials and this step runs with no token in its environment.
 """
@@ -212,13 +213,13 @@ def try_candidate(cand, today, work_root):
     return True, problems, log
 
 
-def write_log(today, ptype, cand, problems, log_text):
+def write_log(today, slot, ptype, cand, problems, log_text):
     os.makedirs("runs", exist_ok=True)
     stars = cand.get("stars", 0)
     lic = cand.get("license", "Unknown")
     desc = cand.get("description") or "(no description)"
     problems_text = "; ".join(problems) if problems else "无"
-    body = f"""# {today} run log
+    body = f"""# {today} run log (slot {slot})
 
 - **Project:** [{cand['full_name']}]({cand['html_url']})
 - **Type:** {ptype}
@@ -234,7 +235,7 @@ def write_log(today, ptype, cand, problems, log_text):
 - **Safety check:** {stars} stars, {lic} license; 代码在一次性 runner 中运行，无凭证：checkout 未持久化凭证，运行步骤无 token
 - **Cleanup:** 一次性 runner，运行结束即销毁，无残留
 """
-    with open(f"runs/{today}.md", "w", encoding="utf-8") as fh:
+    with open(f"runs/{today}-{slot}.md", "w", encoding="utf-8") as fh:
         fh.write(body)
     with open("run-meta.json", "w", encoding="utf-8") as fh:
         json.dump({"full_name": cand["full_name"], "type": ptype, "stars": stars},
@@ -267,7 +268,7 @@ def main() -> None:
             log_text = "\n".join(log)
             if len(log_text) > LOG_LIMIT:
                 log_text = log_text[:LOG_LIMIT] + "\n... (truncated)"
-            write_log(today, ptype, cand, problems, log_text)
+            write_log(today, selection.get("slot", "01"), ptype, cand, problems, log_text)
             print(f"SUCCESS: {cand['full_name']} ({ptype})")
             if problems:
                 print(f"  notes: {'; '.join(problems)}")
