@@ -97,6 +97,34 @@ def search_repos(language: str, token: str | None, since: str) -> list[dict]:
     return items
 
 
+
+STACK_FILES = {"package.json", "go.mod", "requirements.txt", "pyproject.toml", "setup.py"}
+
+def has_runnable_stack(full_name: str, token: str | None) -> bool:
+    """True if the repo root has a file run-project.py can install from.
+
+    List-only repos (awesome-* lists, tutorials, book collections) have none
+    of these at the root, so run-project.py fails them with
+    "no recognizable stack" before any probe runs.
+    """
+    url = f"https://api.github.com/repos/{full_name}/contents/"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "daily-commits-workflow",
+    })
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            entries = json.load(resp)
+    except Exception as exc:
+        print(f"stack check failed for {full_name}: {exc} (keeping it)", file=sys.stderr)
+        return True  # fail-open: an API blip must not empty the pool
+    if not isinstance(entries, list):
+        return True
+    names = {e.get("name") for e in entries}
+    return bool(names & STACK_FILES)
+
 def main() -> None:
     today = os.environ.get("TODAY", "").strip()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", today):
@@ -114,10 +142,16 @@ def main() -> None:
     since = (date.fromisoformat(today) - timedelta(days=75)).isoformat()
 
     items = search_repos(language, token, since)
+    runnable = [it for it in items if has_runnable_stack(it["full_name"], token)]
+    if not runnable:
+        print("no candidate has a runnable stack; keeping unfiltered list", file=sys.stderr)
+        runnable = items
+    else:
+        print(f"stack filter: {len(runnable)}/{len(items)} candidates runnable")
     h = md5_int(f"{today}-{slot}-pick")
     candidates = []
     for i in range(3):
-        item = items[(h + i) % len(items)]
+        item = runnable[(h + i) % len(runnable)]
         lic = item.get("license") or {}
         spdx = lic.get("spdx_id")
         if spdx in (None, "NOASSERTION"):
