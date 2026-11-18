@@ -125,6 +125,76 @@ def has_runnable_stack(full_name: str, token: str | None) -> bool:
     names = {e.get("name") for e in entries}
     return bool(names & STACK_FILES)
 
+
+def _fetch_pyproject(full_name, token):
+    """Return parsed pyproject.toml dict, or None if absent/unreadable (fail-open)."""
+    import base64
+    url = f"https://api.github.com/repos/{full_name}/contents/pyproject.toml"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "daily-commits-workflow",
+    })
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+        if not isinstance(data, dict) or not data.get("content"):
+            return None
+        import tomllib
+        return tomllib.loads(base64.b64decode(data["content"]).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+def _min_python(requires):
+    """Lower bound (major, minor) from a requires-python string, or None."""
+    if not requires:
+        return None
+    m = re.search(r">=\s*(\d+)\.(\d+)", requires)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+def has_runnable_entrypoint(full_name, token):
+    """Python-only check: run-project.py can only probe a Python repo via a
+    console script (--help) or `python -m <module>` / import. A pyproject.toml
+    with no [project.scripts] and no top-level module named after the repo
+    (e.g. a list/website repo whose pyproject is only for its docs site)
+    can never pass the probe, even though it passes has_runnable_stack.
+    Also drop repos whose requires-python excludes the runner's Python 3.12
+    (e.g. >=3.14 / >=3.15: pip install -e . fails before any probe runs).
+    Fail-open: any check that cannot be read keeps the candidate.
+    """
+    proj = _fetch_pyproject(full_name, token)
+    if proj is None:
+        return True
+    project = proj.get("project", {}) or {}
+    req = project.get("requires-python") or ""
+    lo = _min_python(req)
+    if lo is not None and lo > (3, 12):
+        print(f"  entrypoint check: {full_name} requires-python {req} excludes runner Python 3.12 (dropping)", file=sys.stderr)
+        return False
+    if project.get("scripts"):
+        return True
+    # no console scripts: need an importable top-level module/package
+    repo = full_name.split("/")[-1].lower().replace("-", "_").split(".")[0]
+    url = f"https://api.github.com/repos/{full_name}/contents/"
+    req2 = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "daily-commits-workflow",
+    })
+    if token:
+        req2.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req2, timeout=30) as resp:
+            entries = json.load(resp)
+        names = {e.get("name") for e in entries if isinstance(e, dict)}
+    except Exception:
+        return True
+    if f"{repo}.py" in names or repo in names or "src" in names:
+        return True  # src-layout packages (e.g. transformers, langflow) keep the module under src/
+    print(f"  entrypoint check: {full_name} has no console script and no importable {repo} module (dropping)", file=sys.stderr)
+    return False
+
+
 def main() -> None:
     today = os.environ.get("TODAY", "").strip()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", today):
@@ -148,6 +218,13 @@ def main() -> None:
         runnable = items
     else:
         print(f"stack filter: {len(runnable)}/{len(items)} candidates runnable")
+    if language == "python":
+        checked = [it for it in runnable if has_runnable_entrypoint(it["full_name"], token)]
+        if checked:
+            print(f"entrypoint filter: {len(checked)}/{len(runnable)} candidates runnable on Python 3.12")
+            runnable = checked
+        else:
+            print("entrypoint filter would empty the pool; keeping stack-filtered list", file=sys.stderr)
     h = md5_int(f"{today}-{slot}-pick")
     candidates = []
     for i in range(3):
