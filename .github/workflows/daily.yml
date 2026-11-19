@@ -1,5 +1,10 @@
 # Daily green-dot runs, 10 times per day (deep green).
-# Fires every hour 08:00-17:00 ET (13:00-22:00 UTC in EST; 09:00-18:00 in EDT).
+# Fires every hour 08:00-17:00 ET (13:00-22:00 UTC in EST; 09:00-18:00 in EDT),
+# plus a 08:30 ET catch-up (13:30 UTC): on 2026-11-18 the 08:00 trigger never
+# fired and slot 10 was lost. The catch-up fills the earliest missing slot,
+# so it covers slot 01 when 08:00 is skipped, and slot 02 on a normal day.
+# The concurrency group serializes runs, so the extra trigger cannot collide
+# with the 08:00 run; a day still gets at most 10 commits.
 # Each invocation fills the earliest missing slot runs/<date>-<NN>.md (NN=01..10)
 # for today, so a day gets up to 10 commits. workflow_dispatch also fills the
 # earliest missing slot (manual test). Runs a trending project on the
@@ -9,6 +14,7 @@ name: Daily runs (10x)
 on:
   schedule:
     - cron: '0 13,14,15,16,17,18,19,20,21,22 * * *'
+    - cron: '30 13 * * *'
   workflow_dispatch:
 
 permissions:
